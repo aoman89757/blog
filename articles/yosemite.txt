@@ -1,0 +1,11 @@
+OS X 10.10 Yosemite comes with Apache and PHP pre-installed, but it's not in a great configuration, requires root to make lots of changes, and can introduce issues with file ownership and permissions. We prefer to use Homebrew to avoid these problems and because it's easier to keep up to date with newer versions of each component and extend customization. We can also set things up to be fully automatic so you can create new websites locally without needing to edit any configuration files.
+
+With the arrival of Yosemite, some of the changes previously used in 10.9 for setting up Apache, PHP, and MySQL with Homebrew don't work quite the same. This guide will walk you through using Homebrew to install Apache, PHP, and MySQL for a "MAMP" development environment. We'll also use DNSMasq and Apache's VirtualDocumentRoot to set up "auto-VirtualHosts" so you don't need to edit configuration files when starting new projects. Finally, we'll add a firewall rule to allow the default http port 80 to be used without running Apache as root.
+
+The following steps are intended for use on a Yosemite system without any previous attempts to use Homebrew for Apache, PHP, or MySQL. If you have attempted to install a similar stack and run into conflicts, or you've upgraded your operating system from 10.9 and things broke, the final section has some troubleshooting pointers. If that fails, leave a comment and I'll try my best to help you out.
+
+At the conclusion of this guide, you'll be able to create a directory like ~/Sites/project and access it immediately at http://project.dev without editing your /etc/hosts file or editing any Apache configuration. We'll configure PHP and MySQL to allow for enough flexibility for development.
+
+Because some of the commands span several lines, each command will be in a separate code block. This means you should copy and paste each code block in its entirety as a single command.
+
+Before diving in, yes, this is a lot of steps. You can do it faster and pay money for something like MAMP Pro, but this is more fun, and you may learn something along the way! And, while you can simplify things with Vagrant or other virtual machine format, some people prefer to run things on "bare metal" and not have the overhead of a virtual machine.

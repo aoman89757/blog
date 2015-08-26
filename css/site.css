@@ -4,13 +4,33 @@ body {
     background-color: dimgrey;
     background-image: url("../images/stoneBG.jpg");
     color: #696969;
-    padding: 3px 200px 3px 200px;
+    padding: 0 300px 300px 300px;
+
+}
+
+#header {
+    text-align: left;
+    padding-bottom: 10px;
+}
+
+#header-title {
+    font-family: Georgia, serif;
+    color: #996600;
+    font-size: 30px;
+}
+
+#header-tagline {
+    font-family: Georgia, serif;
+    color: rgba(247, 236, 248, 0.99);
+    font-size: 15px;
+    opacity: 0.5;
 }
 
 #main {
-    padding: 5px;
-    padding-left:  15px;
-    padding-right: 15px;
+    padding-top: 5px;
+    padding-left: 20px;
+    padding-right: 30px;
+    padding-bottom: 500px;
     background-color: #ffffff;
     border-radius: 0 0 5px 5px;
 }
@@ -83,7 +103,7 @@ ul#menu li a:hover {
 }
 
 #article-title, #article-content{
-    margin: 10px 200px 10px 500px;
+    margin: 10px 30px 10px 100px;
 }
 
 

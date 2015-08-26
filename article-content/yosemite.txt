@@ -1,0 +1,215 @@
+OS X 10.10 Yosemite comes with Apache and PHP pre-installed, but it's not in a great configuration, requires root to make lots of changes, and can introduce issues with file ownership and permissions. We prefer to use Homebrew to avoid these problems and because it's easier to keep up to date with newer versions of each component and extend customization. We can also set things up to be fully automatic so you can create new websites locally without needing to edit any configuration files.
+
+With the arrival of Yosemite, some of the changes previously used in 10.9 for setting up Apache, PHP, and MySQL with Homebrew don't work quite the same. This guide will walk you through using Homebrew to install Apache, PHP, and MySQL for a "MAMP" development environment. We'll also use DNSMasq and Apache's VirtualDocumentRoot to set up "auto-VirtualHosts" so you don't need to edit configuration files when starting new projects. Finally, we'll add a firewall rule to allow the default http port 80 to be used without running Apache as root.
+
+The following steps are intended for use on a Yosemite system without any previous attempts to use Homebrew for Apache, PHP, or MySQL. If you have attempted to install a similar stack and run into conflicts, or you've upgraded your operating system from 10.9 and things broke, the final section has some troubleshooting pointers. If that fails, leave a comment and I'll try my best to help you out.
+
+At the conclusion of this guide, you'll be able to create a directory like ~/Sites/project and access it immediately at http://project.dev without editing your /etc/hosts file or editing any Apache configuration. We'll configure PHP and MySQL to allow for enough flexibility for development.
+
+Because some of the commands span several lines, each command will be in a separate code block. This means you should copy and paste each code block in its entirety as a single command.
+
+Before diving in, yes, this is a lot of steps. You can do it faster and pay money for something like MAMP Pro, but this is more fun, and you may learn something along the way! And, while you can simplify things with Vagrant or other virtual machine format, some people prefer to run things on "bare metal" and not have the overhead of a virtual machine.
+
+Homebrew Setup
+
+If you've not already installed Homebrew, you can follow the instructions at http://brew.sh. I used to include the command in previous walkthrough blogs, but it could change after posting, so definitely check their website to install it properly.
+
+If you do not have git available on your system, either from Homebrew, Xcode, or another source, you can install it with Homebrew now (if you already have it installed, feel free to skip this step to keep the version of git you already have):
+
+brew install -v git
+PATH Variable
+
+In previous guides on 10.9 and earlier, I added a change to $PATH in ~/.bash_profile to ensure that Homebrew-installed applications would run by default over similar ones that were already installed on OS X. Thankfully, Yosemite's $PATH order is different than earlier OS versions and now includes the default Homebrew location of /usr/local/bin in front. If you installed Homebrew to a custom location, or are not seeing /usr/local/bin at the beginning of your shell's $PATH, check out the file /etc/paths or the directory /etc/paths.d/.
+
+MySQL
+
+Install MySQL with Homebrew:
+
+brew install -v mysql
+Copy the default my-default.cnf file to the MySQL Homebrew Cellar directory where it will be loaded on application start:
+
+cp -v $(brew --prefix mysql)/support-files/my-default.cnf $(brew --prefix)/etc/my.cnf
+This will configure MySQL to allow for the maximum packet size, only appropriate for a local or development server. Also, we'll keep each InnoDB table in separate files to keep ibdataN-type file sizes low and make file-based backups, like Time Machine, easier to manage multiple small files instead of a few large InnoDB data files. This is the first of many multi-line single commands. The following is a single, multi-line command; copy and paste the entire block at once:
+
+cat >> $(brew --prefix)/etc/my.cnf <<'EOF'
+ 
+# Echo & Co. changes
+max_allowed_packet = 1073741824
+innodb_file_per_table = 1
+EOF
+Uncomment the sample option for innodb_buffer_pool_size to improve performance:
+
+sed -i '' 's/^#[[:space:]]*\(innodb_buffer_pool_size\)/\1/' $(brew --prefix)/etc/my.cnf
+Now we need to start MySQL using OS X's launchd. This used to be an involved process with launchctl commands, but now we can leverage the excellent brew services command:
+
+brew tap homebrew/services
+brew services start mysql
+By default, MySQL's root user has an empty password from any connection. You are advised to run mysql_secure_installation and at least set a password for the root user:
+
+$(brew --prefix mysql)/bin/mysql_secure_installation
+Apache
+
+Start by stopping the built-in Apache, if it's running, and prevent it from starting on boot. This is one of very few times you'll need to use sudo:
+
+sudo launchctl unload /System/Library/LaunchDaemons/org.apache.httpd.plist 2>/dev/null
+The formula for building Apache is not in the default Homebrew repository that you get by installing Homebrew. While we can use the format of brew install external-repo/formula, if an external formula relies on another external formula, you have to use the brew tap command first. I know, it's weird. So, we need to tap homebrew-dupes because "homebrew-apache/httpd22" relies on "homebrew-dupes/zlib". Whew:
+
+brew tap homebrew/dupes
+A slight deviation from my prior walkthroughs: we'll install Apache 2.2 with the event MPM and set up PHP-FPM instead of mod_php. If those terms mean anything to you and you're curious as to why I decided to go this route; it's because: 1) switching PHP versions is far easier with PHP-FPM and the default 9000 port instead of also editing the Apache configuration to switch the mod_php module location, and 2) if we're therefore not using mod_php, we don't have to use the prefork MPM and can get better performance with event or worker. As to why I'm using 2.2 instead of 2.4, popular FOSS projects like Drupal and WordPress still ship with 2.2-style .htaccess files. Using 2.4 sometimes means you have to set up "compat" modules, and that's above the requirement for a local environment, in my opinion.
+
+Onward! Let's install Apache 2.2 with the event MPM, and we'll use Homebrew's OpenSSL library since it's more up-to-date than OS X's:
+
+brew install -v homebrew/apache/httpd22 --with-brewed-openssl --with-mpm-event
+In order to get Apache and PHP to communicate via PHP-FPM, we'll install the mod_fastcgi module:
+
+brew install -v homebrew/apache/mod_fastcgi --with-brewed-httpd22
+To prevent any potential problems with previous mod_fastcgi setups, let's remove all references to the mod_fastcgi module (we'll re-add the new version later):
+
+sed -i '' '/fastcgi_module/d' $(brew --prefix)/etc/apache2/2.2/httpd.conf
+Add the logic for Apache to send PHP to PHP-FPM with mod_fastcgi, and reference that we'll want to use the file ~/Sites/httpd-vhosts.conf to configure our VirtualHosts. The parenthesis are used to run the command in a subprocess, so that the exported variables don't persist in your terminal session afterwards. Also, you'll see export USERHOME a few times in this guide; I look up the full path for your user home directory from the operating system wherever a full path is needed in a configuration file and "~" or a literal "$HOME" would not work.
+
+This is all one command, so copy and paste the entire code block at once:
+
+(export USERHOME=$(dscl . -read /Users/`whoami` NFSHomeDirectory | awk -F"\: " '{print $2}') ; export MODFASTCGIPREFIX=$(brew --prefix mod_fastcgi) ; cat >> $(brew --prefix)/etc/apache2/2.2/httpd.conf <<EOF
+ 
+# Echo & Co. changes
+ 
+# Load PHP-FPM via mod_fastcgi
+LoadModule fastcgi_module    ${MODFASTCGIPREFIX}/libexec/mod_fastcgi.so
+ 
+<IfModule fastcgi_module>
+  FastCgiConfig -maxClassProcesses 1 -idle-timeout 1500
+ 
+  # Prevent accessing FastCGI alias paths directly
+  <LocationMatch "^/fastcgi">
+    <IfModule mod_authz_core.c>
+      Require env REDIRECT_STATUS
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+      Order Deny,Allow
+      Deny from All
+      Allow from env=REDIRECT_STATUS
+    </IfModule>
+  </LocationMatch>
+ 
+  FastCgiExternalServer /php-fpm -host 127.0.0.1:9000 -pass-header Authorization -idle-timeout 1500
+  ScriptAlias /fastcgiphp /php-fpm
+  Action php-fastcgi /fastcgiphp
+ 
+  # Send PHP extensions to PHP-FPM
+  AddHandler php-fastcgi .php
+ 
+  # PHP options
+  AddType text/html .php
+  AddType application/x-httpd-php .php
+  DirectoryIndex index.php index.html
+</IfModule>
+ 
+# Include our VirtualHosts
+Include ${USERHOME}/Sites/httpd-vhosts.conf
+EOF
+)
+We'll be using the file ~/Sites/httpd-vhosts.conf to configure our VirtualHosts, but the ~/Sites folder doesn't exist by default in newer versions of OS X. We'll also create folders for logs and SSL files:
+
+mkdir -pv ~/Sites/{logs,ssl}
+Let's populate the ~/Sites/httpd-vhosts.conf file. The biggest difference from my previous guides are that you'll see the port numbers are 8080/8443 instead of 80/443. OS X 10.9 and earlier had the ipfw firewall which allowed for port redirecting, so we would send port 80 traffic "directly" to our Apache. But ipfw is now removed and replaced by pf which "forwards" traffic to another port. We'll get to that later, but know that "8080" and "8443" are not typos but are acceptable because of later port forwarding. Also, I've now added a basic SSL configuration (though you'll need to acknowledge warnings in your browser about self-signed certificates):
+
+touch ~/Sites/httpd-vhosts.conf
+(export USERHOME=$(dscl . -read /Users/`whoami` NFSHomeDirectory | awk -F"\: " '{print $2}') ; cat > ~/Sites/httpd-vhosts.conf <<EOF
+#
+# Listening ports.
+#
+#Listen 8080  # defined in main httpd.conf
+Listen 8443
+ 
+#
+# Use name-based virtual hosting.
+#
+NameVirtualHost *:8080
+NameVirtualHost *:8443
+ 
+#
+# Set up permissions for VirtualHosts in ~/Sites
+#
+<Directory "${USERHOME}/Sites">
+    Options Indexes FollowSymLinks MultiViews
+    AllowOverride All
+    <IfModule mod_authz_core.c>
+        Require all granted
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Allow from all
+    </IfModule>
+</Directory>
+ 
+# For http://localhost in the users' Sites folder
+<VirtualHost _default_:8080>
+    ServerName localhost
+    DocumentRoot "${USERHOME}/Sites"
+</VirtualHost>
+<VirtualHost _default_:8443>
+    ServerName localhost
+    Include "${USERHOME}/Sites/ssl/ssl-shared-cert.inc"
+    DocumentRoot "${USERHOME}/Sites"
+</VirtualHost>
+ 
+#
+# VirtualHosts
+#
+ 
+## Manual VirtualHost template for HTTP and HTTPS
+#<VirtualHost *:8080>
+#  ServerName project.dev
+#  CustomLog "${USERHOME}/Sites/logs/project.dev-access_log" combined
+#  ErrorLog "${USERHOME}/Sites/logs/project.dev-error_log"
+#  DocumentRoot "${USERHOME}/Sites/project.dev"
+#</VirtualHost>
+#<VirtualHost *:8443>
+#  ServerName project.dev
+#  Include "${USERHOME}/Sites/ssl/ssl-shared-cert.inc"
+#  CustomLog "${USERHOME}/Sites/logs/project.dev-access_log" combined
+#  ErrorLog "${USERHOME}/Sites/logs/project.dev-error_log"
+#  DocumentRoot "${USERHOME}/Sites/project.dev"
+#</VirtualHost>
+ 
+#
+# Automatic VirtualHosts
+#
+# A directory at ${USERHOME}/Sites/webroot can be accessed at http://webroot.dev
+# In Drupal, uncomment the line with: RewriteBase /
+#
+ 
+# This log format will display the per-virtual-host as the first field followed by a typical log line
+LogFormat "%V %h %l %u %t \"%r\" %>s %b \"%{Referer}i\" \"%{User-Agent}i\"" combinedmassvhost
+ 
+# Auto-VirtualHosts with .dev
+<VirtualHost *:8080>
+  ServerName dev
+  ServerAlias *.dev
+ 
+  CustomLog "${USERHOME}/Sites/logs/dev-access_log" combinedmassvhost
+  ErrorLog "${USERHOME}/Sites/logs/dev-error_log"
+ 
+  VirtualDocumentRoot ${USERHOME}/Sites/%-2+
+</VirtualHost>
+<VirtualHost *:8443>
+  ServerName dev
+  ServerAlias *.dev
+  Include "${USERHOME}/Sites/ssl/ssl-shared-cert.inc"
+ 
+  CustomLog "${USERHOME}/Sites/logs/dev-access_log" combinedmassvhost
+  ErrorLog "${USERHOME}/Sites/logs/dev-error_log"
+ 
+  VirtualDocumentRoot ${USERHOME}/Sites/%-2+
+</VirtualHost>
+EOF
+)
+You may have noticed that ~/Sites/ssl/ssl-shared-cert.inc is included multiple times; create that file and the SSL files it needs:
+
+(export USERHOME=$(dscl . -read /Users/`whoami` NFSHomeDirectory | awk -F"\: " '{print $2}') ; cat > ~/Sites/ssl/ssl-shared-cert.inc <<EOF
+SSLEngine On
+SSLProtocol all -SSLv2 -SSLv3
+SSLCipherSuite ALL:!ADH:!EXPORT:!SSLv2:RC4+RSA:+HIGH:+MEDIUM:+LOW
+SSLCertificateFile "${USERHOME}/Sites/ssl/selfsigned.crt"
+SSLCertificateKeyFile "${USERHOME}/Sites/ssl/private.key"
